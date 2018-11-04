@@ -20,6 +20,14 @@ if (!jiraOutputPath) {
     return;
 }
 
+var sortBy = function (field) {
+    return function (a, b) {
+        if (a[field] < b[field]) return -1;
+        if (a[field] > b[field]) return 1;
+        return 0;
+    };
+};
+
 console.log(chalk.gray('Converting Trello JSON file: ' + trelloInputPath));
 console.log(chalk.gray('  into Jira JSON file:       ' + jiraOutputPath))
 
@@ -32,8 +40,9 @@ fs.readFile(program.args[0], 'utf8', function (err, data) {
     // convert users
     if (trelloBoard.members) {
         jiraProject.users = [];
-        for (var memberIdx = 0; memberIdx < trelloBoard.members.length; memberIdx++) {
-            var member = trelloBoard.members[memberIdx];
+        var trelloMembers = trelloBoard.members.sort(sortBy('id'));
+        for (var memberIdx = 0; memberIdx < trelloMembers.length; memberIdx++) {
+            var member = trelloMembers[memberIdx];
             console.log(chalk.gray('Converting user: ') + member.username);
 
             jiraProject.users.push({
@@ -46,11 +55,12 @@ fs.readFile(program.args[0], 'utf8', function (err, data) {
     }
 
     // convert the project
+    var jiraProjectKey = trelloBoard.name.replace(/[a-z0-9 ]/g, '')
+        || trelloBoard.name.substr(0, 4);
     jiraProject.projects = [
         {
             name: trelloBoard.name,
-            key: trelloBoard.name.replace(/[a-z0-9 ]/g, '')
-                || trelloBoard.name.substr(0, 4),
+            key: jiraProjectKey,
             description: trelloBoard.desc 
                 || 'Imported from Trello: ' + trelloBoard.url,
             type: 'software',
@@ -59,26 +69,23 @@ fs.readFile(program.args[0], 'utf8', function (err, data) {
         }
     ];
 
-    var sortByPos = function (a, b) {
-        if (a.pos < b.pos) return -1;
-        if (a.pos > b.pos) return 1;
-        return 0;
-    };
-
     // convert the issues
     if (trelloBoard.cards) {
         jiraProject.issues = [];
         var externalIdCounter = 1;
-        var trelloCards = trelloBoard.cards.sort(sortByPos);
+        var trelloCards = trelloBoard.cards.sort(sortBy('pos'));
         for (var cardIdx = 0; cardIdx < trelloCards.length; cardIdx++) {
             var card = trelloCards[cardIdx];
             console.log(chalk.gray('Converting card: ') + card.name);
 
             jiraProject.issues.push({
+                key: jiraProjectKey + '-' + externalIdCounter,
                 externalId: externalIdCounter++,
                 summary: card.name,
                 description: card.desc,
+                reporter: jiraProject.users[0].name,
                 status: card.closed? 'Closed' : 'Open',
+                resolution: card.closed? 'Resolved' : null,
                 issueType: 'Story',
                 assignee: !card.idMembers || !card.idMembers.length ? 
                     null :
@@ -88,6 +95,8 @@ fs.readFile(program.args[0], 'utf8', function (err, data) {
                     card.idMembers
                         .map(function (idMember) { return trelloBoard.members.find(function(m) { return m.id == idMember; })['username'] || null; })
                         .filter(function (username) { return username; }),
+                created: new Date().toISOString(),
+                updated: new Date().toISOString(),
             });
 
             // convert checklists
@@ -96,15 +105,19 @@ fs.readFile(program.args[0], 'utf8', function (err, data) {
                     var idChecklist = card.idChecklists[idChecklistIdx];
                     var checklist = trelloBoard.checklists.find(function (ck) { return ck.id == idChecklist; });
                     if (checklist) {
-                        var checkItems = checklist.checkItems.sort(sortByPos);
+                        var checkItems = checklist.checkItems.sort(sortBy('pos'));
                         for (var checkItemsIdx = 0; checkItemsIdx < checkItems.length; checkItemsIdx++) {
                             var checkItem = checkItems[checkItemsIdx];
 
                             jiraProject.issues.push({
+                                key: jiraProjectKey + '-' + externalIdCounter,
                                 externalId: externalIdCounter++,
+                                reporter: jiraProject.users[0].name,
                                 status: checkItem.state === 'complete' ? 'Closed' : 'Open',
                                 summary: checklist.name + ': ' + checkItem.name,
-                                issueType: 'Sub-task'
+                                issueType: 'Sub-task',
+                                created: new Date().toISOString(),
+                                updated: new Date().toISOString(),
                             });
                         }
                     }
