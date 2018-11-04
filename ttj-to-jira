@@ -1,0 +1,120 @@
+#!/usr/bin/env node
+'use strict';
+
+const program = require('commander'),
+    chalk = require('chalk'),
+    fs = require('fs');
+
+program
+    .parse(process.argv);
+
+let trelloInputPath = program.args[0];
+let jiraOutputPath = program.args[1];
+
+if (!trelloInputPath) {
+    console.error(chalk.red.bold('Invalid Trello input file. Run `ttj` for help.'));
+    return;
+}
+if (!jiraOutputPath) {
+    console.error(chalk.red.bold('Invalid Jira output file. Run `ttj` for help.'));
+    return;
+}
+
+console.log(chalk.gray('Converting Trello JSON file: ' + trelloInputPath));
+console.log(chalk.gray('  into Jira JSON file:       ' + jiraOutputPath))
+
+// read the Input JSON
+fs.readFile(program.args[0], 'utf8', function (err, data) {
+    if (err) throw err;
+    var trelloBoard = JSON.parse(data);
+    var jiraProject = {};
+
+    // convert users
+    if (trelloBoard.members) {
+        jiraProject.users = [];
+        for (var memberIdx = 0; memberIdx < trelloBoard.members.length; memberIdx++) {
+            var member = trelloBoard.members[memberIdx];
+            console.log(chalk.gray('Converting user: ') + member.username);
+
+            jiraProject.users.push({
+                name: member.username,
+                fullname: member.fullName,
+                active: false,
+                email: member.username + '@boards.trello.com',
+            });
+        }
+    }
+
+    // convert the project
+    jiraProject.projects = [
+        {
+            name: trelloBoard.name,
+            key: trelloBoard.name.replace(/[a-z0-9 ]/g, '')
+                || trelloBoard.name.substr(0, 4),
+            description: trelloBoard.desc 
+                || 'Imported from Trello: ' + trelloBoard.url,
+            type: 'software',
+            template: 'com.pyxis.greenhopper.jira:gh-scrum-template',
+            url: trelloBoard.url,
+        }
+    ];
+
+    var sortByPos = function (a, b) {
+        if (a.pos < b.pos) return -1;
+        if (a.pos > b.pos) return 1;
+        return 0;
+    };
+
+    // convert the issues
+    if (trelloBoard.cards) {
+        jiraProject.issues = [];
+        var externalIdCounter = 1;
+        var trelloCards = trelloBoard.cards.sort(sortByPos);
+        for (var cardIdx = 0; cardIdx < trelloCards.length; cardIdx++) {
+            var card = trelloCards[cardIdx];
+            console.log(chalk.gray('Converting card: ') + card.name);
+
+            jiraProject.issues.push({
+                externalId: externalIdCounter++,
+                summary: card.name,
+                description: card.desc,
+                status: card.closed? 'Closed' : 'Open',
+                issueType: 'Story',
+                assignee: !card.idMembers || !card.idMembers.length ? 
+                    null :
+                    trelloBoard.members.find(function(m) { return m.id == card.idMembers[0]; })['username'] || null,
+                watchers: !card.idMembers || !card.idMembers.length ? 
+                    null :
+                    card.idMembers
+                        .map(function (idMember) { return trelloBoard.members.find(function(m) { return m.id == idMember; })['username'] || null; })
+                        .filter(function (username) { return username; }),
+            });
+
+            // convert checklists
+            if (card.idChecklists) {
+                for (var idChecklistIdx = 0; idChecklistIdx < card.idChecklists.length; idChecklistIdx++) {
+                    var idChecklist = card.idChecklists[idChecklistIdx];
+                    var checklist = trelloBoard.checklists.find(function (ck) { return ck.id == idChecklist; });
+                    if (checklist) {
+                        var checkItems = checklist.checkItems.sort(sortByPos);
+                        for (var checkItemsIdx = 0; checkItemsIdx < checkItems.length; checkItemsIdx++) {
+                            var checkItem = checkItems[checkItemsIdx];
+
+                            jiraProject.issues.push({
+                                externalId: externalIdCounter++,
+                                status: checkItem.state === 'complete' ? 'Closed' : 'Open',
+                                summary: checklist.name + ': ' + checkItem.name,
+                                issueType: 'Sub-task'
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fs.writeFile(jiraOutputPath, JSON.stringify(jiraProject), 'utf8', function (err) {
+        if (err) throw err;
+        console.log(chalk.green('Jira JSON written successfully'));
+    })
+});
