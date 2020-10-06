@@ -1,0 +1,27 @@
+{
+  "name": "convert-trello-json-to-jira",
+  "version": "0.1.0",
+  "description": "Convert Trello JSON to Jira JSON",
+  "main": "ttj",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/m0003r/convert-trello-json-to-jira.git"
+  },
+  "keywords": [
+    "Trello",
+    "JIRA"
+  ],
+  "author": "Mauricio Morales, m0003r",
+  "license": "GPL-3.0",
+  "bugs": {
+    "url": "https://github.com/m0003r/convert-trello-json-to-jira/issues"
+  },
+  "homepage": "https://github.com/m0003r/convert-trello-json-to-jira#readme",
+  "dependencies": {
+    "chalk": "^4.1.0",
+    "commander": "^6.1.0"
+  }
+}

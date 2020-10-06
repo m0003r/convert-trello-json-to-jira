@@ -6,10 +6,13 @@ const program = require('commander'),
     fs = require('fs');
 
 program
+    .option('-m, --mapping <mapping.json>', 'Project and users mapping file')
     .parse(process.argv);
 
 let trelloInputPath = program.args[0];
 let jiraOutputPath = program.args[1];
+let mappingPath = program.mapping;
+let mapping = {};
 
 if (!trelloInputPath) {
     console.error(chalk.red.bold('Invalid Trello input file. Run `ttj` for help.'));
@@ -18,6 +21,15 @@ if (!trelloInputPath) {
 if (!jiraOutputPath) {
     console.error(chalk.red.bold('Invalid Jira output file. Run `ttj` for help.'));
     return;
+}
+if (mappingPath) {
+    try {
+        mapping = JSON.parse(fs.readFileSync(mappingPath, {encoding: 'utf8'}));
+    } catch (e) {
+        console.error(chalk.red.bold(`Can't read mapping file ${mappingPath}`));
+    }
+} else {
+    console.info(chalk.gray('No mapping file specified'));
 }
 
 var sortBy = function (field) {
@@ -34,99 +46,190 @@ console.log(chalk.gray('  into Jira JSON file:       ' + jiraOutputPath))
 // read the Input JSON
 fs.readFile(program.args[0], 'utf8', function (err, data) {
     if (err) throw err;
-    var trelloBoard = JSON.parse(data);
-    var jiraProject = {};
+    const trelloBoard = JSON.parse(data);
+    const jiraProject = {};
+    let userMapping = {}, cardMapping = {}, listMapping = {};
+
+    trelloBoard.lists.forEach(function(list) {
+        if (mapping.status[list.name]) {
+            listMapping[list.id] = mapping.status[list.name];
+        } else {
+            console.warn(chalk.red.bold(`List ${list.name} not mapped`));
+        }
+    });
 
     // convert users
     if (trelloBoard.members) {
         jiraProject.users = [];
-        var trelloMembers = trelloBoard.members.sort(sortBy('id'));
-        for (var memberIdx = 0; memberIdx < trelloMembers.length; memberIdx++) {
-            var member = trelloMembers[memberIdx];
+        const trelloMembers = trelloBoard.members.sort(sortBy('id'));
+        for (let memberIdx = 0; memberIdx < trelloMembers.length; memberIdx++) {
+            const member = trelloMembers[memberIdx];
             console.log(chalk.gray('Converting user: ') + member.username);
 
-            jiraProject.users.push({
+            let user = {
                 name: member.username,
                 fullname: member.fullName,
                 active: false,
                 email: member.username + '@boards.trello.com',
-            });
+            };
+
+            if (mapping.users && mapping.users[member.username]) {
+                const mappedUser = mapping.users[member.username];
+                user.name = mappedUser.name;
+                user.fullname = mappedUser.fullName;
+                user.email = mappedUser.email;
+            }
+
+            userMapping[member.id] = user.name;
+
+            jiraProject.users.push(user);
         }
     }
 
     // convert the project
-    var jiraProjectKey = trelloBoard.name.replace(/[a-z0-9 ]/g, '')
-        || trelloBoard.name.substr(0, 4);
+    let jiraProjectName, jiraProjectKey;
+    if (mapping.projects && mapping.projects[trelloBoard.name]) {
+        jiraProjectName = mapping.projects[trelloBoard.name].name;
+        jiraProjectKey = mapping.projects[trelloBoard.name].key;
+    } else {
+        jiraProjectKey = trelloBoard.name.replace(/[a-z0-9 ]/g, '') || trelloBoard.name.substr(0, 4);
+        jiraProjectName = trelloBoard.name;
+    }
+
+    let issues = [];
+
+
     jiraProject.projects = [
         {
-            name: trelloBoard.name,
+            name: jiraProjectName,
             key: jiraProjectKey,
-            description: trelloBoard.desc 
+            description: trelloBoard.desc
                 || 'Imported from Trello: ' + trelloBoard.url,
             type: 'software',
-            template: 'com.pyxis.greenhopper.jira:gh-scrum-template',
+            template: 'com.pyxis.greenhopper.jira:gh-kanban-template',
             url: trelloBoard.url,
+            issues: issues,
         }
     ];
 
+
     // convert the issues
     if (trelloBoard.cards) {
-        jiraProject.issues = [];
-        var externalIdCounter = 1;
-        var trelloCards = trelloBoard.cards.sort(sortBy('pos'));
-        for (var cardIdx = 0; cardIdx < trelloCards.length; cardIdx++) {
-            var card = trelloCards[cardIdx];
+        let subTasks = [];
+        const trelloCards = trelloBoard.cards.sort(sortBy('pos'));
+        for (let cardIdx = 0; cardIdx < trelloCards.length; cardIdx++) {
+            const card = trelloCards[cardIdx];
             console.log(chalk.gray('Converting card: ') + card.name);
 
-            jiraProject.issues.push({
-                key: jiraProjectKey + '-' + externalIdCounter,
-                externalId: externalIdCounter++,
+            let issue = {
                 summary: card.name,
+                externalId: card.id,
                 description: card.desc,
                 reporter: jiraProject.users[0].name,
-                status: card.closed? 'Closed' : 'Open',
-                resolution: card.closed? 'Resolved' : null,
-                issueType: 'Story',
-                assignee: !card.idMembers || !card.idMembers.length ? 
-                    null :
-                    trelloBoard.members.find(function(m) { return m.id == card.idMembers[0]; })['username'] || null,
-                watchers: !card.idMembers || !card.idMembers.length ? 
+                status: listMapping[card.idList].name || (card.closed ? 'Closed' : 'Open'),
+                resolution: listMapping[card.idList].resolution || (card.closed ? 'Resolved' : null),
+                issueType: 'Task',
+                assignee: !card.idMembers || !card.idMembers.length ?
+                    null : userMapping[card.idMembers[0]] || null,
+                watchers: !card.idMembers || !card.idMembers.length ?
                     null :
                     card.idMembers
-                        .map(function (idMember) { return trelloBoard.members.find(function(m) { return m.id == idMember; })['username'] || null; })
-                        .filter(function (username) { return username; }),
-                created: new Date().toISOString(),
-                updated: new Date().toISOString(),
-            });
+                        .map(idMember => userMapping[idMember] || null)
+                        .filter(username => username),
+                created: card.dateLastActivity || new Date().toISOString(),
+                updated: card.dateLastActivity || new Date().toISOString(),
+            };
+
+            cardMapping[card.id] = issue;
+            issues.push(issue);
 
             // convert checklists
             if (card.idChecklists) {
-                for (var idChecklistIdx = 0; idChecklistIdx < card.idChecklists.length; idChecklistIdx++) {
-                    var idChecklist = card.idChecklists[idChecklistIdx];
-                    var checklist = trelloBoard.checklists.find(function (ck) { return ck.id == idChecklist; });
+                jiraProject.links = [];
+                subTasks[card.id] = subTasks[card.id] || [];
+                for (let idChecklistIdx = 0; idChecklistIdx < card.idChecklists.length; idChecklistIdx++) {
+                    const idChecklist = card.idChecklists[idChecklistIdx];
+                    const checklist = trelloBoard.checklists.find(function (ck) {
+                        return ck.id === idChecklist;
+                    });
                     if (checklist) {
-                        var checkItems = checklist.checkItems.sort(sortBy('pos'));
-                        for (var checkItemsIdx = 0; checkItemsIdx < checkItems.length; checkItemsIdx++) {
-                            var checkItem = checkItems[checkItemsIdx];
+                        const checkItems = checklist.checkItems.sort(sortBy('pos'));
+                        for (let checkItemsIdx = 0; checkItemsIdx < checkItems.length; checkItemsIdx++) {
+                            const checkItem = checkItems[checkItemsIdx];
 
-                            jiraProject.issues.push({
-                                key: jiraProjectKey + '-' + externalIdCounter,
-                                externalId: externalIdCounter++,
-                                reporter: jiraProject.users[0].name,
+                            subTasks[card.id].push({
+                                reporter: userMapping[card.idMembers[0]] || null,
                                 status: checkItem.state === 'complete' ? 'Closed' : 'Open',
                                 summary: checklist.name + ': ' + checkItem.name,
-                                issueType: 'Sub-task',
-                                created: new Date().toISOString(),
-                                updated: new Date().toISOString(),
                             });
                         }
                     }
                 }
             }
         }
+
+        const actions = trelloBoard.actions.sort(sortBy('date'));
+        for (let i = 0; i < actions.length; i++) {
+            let action = actions[i];
+            if (!action.data || !action.data.card) {
+                continue;
+            }
+            let card = cardMapping[action.data.card.id];
+            if (!card) {
+                continue;
+            }
+            switch (action.type) {
+                case 'createCard':
+                    card.created = action.date;
+                    break;
+                case 'commentCard':
+                    card.comments = card.comments || [];
+                    card.comments.push({
+                        body: action.data.text,
+                        created: action.date,
+                        author: userMapping[action.idMemberCreator] || null
+                    })
+                    break;
+            }
+        }
+
+        issues = issues.sort(sortBy('created'));
+
+        let key = 1;
+        let mainTaskCount = issues.length;
+        for (let i = 0; i < mainTaskCount; i++) {
+            let issue = issues[i];
+            issue.key = `${jiraProjectKey}-${key}`;
+            key++;
+
+            if (subTasks[issue.externalId]) {
+                let mySubTasks = subTasks[issue.externalId];
+                for (let j = 0; j < mySubTasks.length; j++) {
+                    let subTaskExternalId = `sub-task-${key}`;
+                    let subTask = Object.assign(
+                        {},
+                        mySubTasks[j],
+                        {
+                            key: `${jiraProjectKey}-${key}`,
+                            issueType: 'Sub-task',
+                            created: issue.created,
+                            updated: issue.updated,
+                            externalId: subTaskExternalId
+                        })
+                    issues.push(subTask)
+                    jiraProject.links.push({
+                        "name": "sub-task-link",
+                        "sourceId": subTaskExternalId,
+                        "destinationId": issue.externalId
+                    });
+                    key++;
+                }
+            }
+        }
+
     }
 
-    fs.writeFile(jiraOutputPath, JSON.stringify(jiraProject), 'utf8', function (err) {
+    fs.writeFile(jiraOutputPath, JSON.stringify(jiraProject, null, 2), 'utf8', function (err) {
         if (err) throw err;
         console.log(chalk.green('Jira JSON written successfully'));
     })
